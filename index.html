@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#07120f">
+  <meta name="description" content="LoopLink browser client for secure paired WebRTC audio.">
+  <title>LoopLink Web</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="bg-orb orb-a"></div>
+  <div class="bg-orb orb-b"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">LL</div>
+      <div>
+        <h1>LoopLink</h1>
+        <p>Web • P2P Cloud Edition</p>
+      </div>
+    </div>
+    <div id="cloudBadge" class="badge"><span class="dot"></span> Cloud checking…</div>
+  </header>
+
+  <main class="shell">
+    <section class="hero card">
+      <div>
+        <span class="eyebrow">SECURE WEBRTC AUDIO</span>
+        <h2>Listen. Talk. Stay paired.</h2>
+        <p>Pairs with the LoopLink Android v0.2 app using your Cloudflare Worker. Audio is WebRTC peer-to-peer when possible, with TURN fallback when required.</p>
+      </div>
+      <div class="hero-status">
+        <span id="sessionDot" class="status-dot idle"></span>
+        <div>
+          <strong id="sessionState">Idle</strong>
+          <small id="sessionDetail">No active audio session</small>
+        </div>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">THIS BROWSER</span>
+            <h3>Device identity</h3>
+          </div>
+          <button id="resetIdentityBtn" class="ghost small" type="button">Reset</button>
+        </div>
+
+        <label class="field">
+          <span>Device name</span>
+          <input id="deviceName" maxlength="80" placeholder="My browser">
+        </label>
+
+        <button id="registerBtn" class="primary full" type="button">Register this browser</button>
+
+        <div class="info-box">
+          <span>Identity</span>
+          <strong id="identityStatus">Not registered</strong>
+          <code id="identityId">—</code>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">PAIRING</span>
+            <h3>Permanent pair</h3>
+          </div>
+          <button id="refreshPairsBtn" class="ghost small" type="button">Refresh</button>
+        </div>
+
+        <button id="createCodeBtn" class="secondary full" type="button">Create pair code</button>
+        <div id="pairCode" class="pair-code">------</div>
+        <p class="pair-helper">The same 6-digit code can be entered on an Android app and this web app during the 15-minute window. The code owner approves each endpoint.</p>
+
+        <div class="join-row">
+          <input id="joinCode" inputmode="numeric" maxlength="6" placeholder="6-digit code">
+          <button id="joinBtn" class="secondary" type="button">Join</button>
+        </div>
+
+        <div class="subhead">
+          <span>Pending approvals</span>
+          <button id="refreshPendingBtn" class="link-btn" type="button">Refresh</button>
+        </div>
+        <div id="pendingList" class="stack muted-box">No pending requests</div>
+      </section>
+
+      <section class="card audio-card">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">AUDIO</span>
+            <h3>Connection</h3>
+          </div>
+          <span id="peerStateBadge" class="mini-status">IDLE</span>
+        </div>
+
+        <label class="field">
+          <span>Paired device</span>
+          <select id="pairSelect">
+            <option value="">No paired devices</option>
+          </select>
+        </label>
+
+        <div class="mode-grid">
+          <button id="listenBtn" class="mode-btn listen" type="button">
+            <span class="mode-icon">◉</span>
+            <strong>Loop Listen</strong>
+            <small>Receive continuously</small>
+          </button>
+          <button id="transmitBtn" class="mode-btn transmit" type="button">
+            <span class="mode-icon">●</span>
+            <strong>Loop Transmit</strong>
+            <small>Send microphone</small>
+          </button>
+          <button id="talkBtn" class="mode-btn talk" type="button">
+            <span class="mode-icon">↕</span>
+            <strong>Talk</strong>
+            <small>Two-way audio</small>
+          </button>
+        </div>
+
+        <button id="stopBtn" class="danger full" type="button" disabled>Stop session</button>
+
+        <div class="controls">
+          <div class="control-row">
+            <span>Microphone</span>
+            <button id="muteBtn" class="toggle-btn" type="button" disabled>Muted / Off</button>
+          </div>
+          <label class="control-row">
+            <span>Remote volume</span>
+            <input id="volumeSlider" type="range" min="0" max="1" step="0.05" value="1">
+          </label>
+          <label class="control-row">
+            <span>Audio output</span>
+            <select id="outputSelect">
+              <option value="">Browser / system default</option>
+            </select>
+          </label>
+          <button id="enableAudioBtn" class="ghost full" type="button">Enable remote audio</button>
+        </div>
+
+        <audio id="remoteAudio" autoplay playsinline></audio>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">SETTINGS</span>
+            <h3>Cloud endpoint</h3>
+          </div>
+        </div>
+
+        <label class="field">
+          <span>LoopLink Worker URL</span>
+          <input id="apiUrl" type="url" spellcheck="false">
+        </label>
+        <button id="saveApiBtn" class="ghost full" type="button">Save endpoint</button>
+
+        <div class="notice">
+          <strong>Browser limitation</strong>
+          <p>On iPhone/iPad, continuous microphone use is reliable only while Safari/PWA remains active. A web page cannot guarantee locked-screen background transmission like the native Android app.</p>
+        </div>
+        <div class="notice">
+          <strong>Top earpiece</strong>
+          <p>Web browsers do not consistently expose the phone's call earpiece as a selectable output. The native Android app provides the reliable earpiece/speaker routing.</p>
+        </div>
+      </section>
+
+      <section class="card log-card">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">DIAGNOSTICS</span>
+            <h3>Session log</h3>
+          </div>
+          <button id="clearLogBtn" class="ghost small" type="button">Clear</button>
+        </div>
+        <pre id="log">LoopLink Web ready.</pre>
+      </section>
+    </div>
+  </main>
+
+  <footer>
+    <span>LoopLink Web v0.3.0</span>
+    <span>GitHub Pages compatible</span>
+  </footer>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js" defer></script>
+</body>
+</html>
