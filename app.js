@@ -289,6 +289,8 @@
       this.micEnabled = false;
       this.restartTimer = null;
       this.disconnectTimer = null;
+      this.connectWatchdog = null;
+      this.previousSessionId = null;
       this.runToken = 0;
       this.stopping = false;
     }
@@ -338,6 +340,20 @@
         iceCandidatePoolSize: 2,
       });
 
+      clearTimeout(this.connectWatchdog);
+      this.connectWatchdog = setTimeout(() => {
+        if (
+          token === this.runToken &&
+          !this.stopping &&
+          this.pc &&
+          this.pc.connectionState !== "connected"
+        ) {
+          log("Connection watchdog triggered");
+          setSessionUi("waiting", "Reconnecting", "Connection negotiation timed out");
+          this.scheduleReconnect(token, 0);
+        }
+      }, 18000);
+
       this.pc.ontrack = (event) => {
         const stream = event.streams?.[0] || new MediaStream([event.track]);
         els.remoteAudio.srcObject = stream;
@@ -364,6 +380,8 @@
         log(`Peer state: ${s}`);
         if (s === "connected") {
           clearTimeout(this.disconnectTimer);
+          clearTimeout(this.connectWatchdog);
+          this.connectWatchdog = null;
           setSessionUi("connected", "Connected", this.sessionLabel());
           els.peerStateBadge.textContent = "CONNECTED";
         } else if (s === "connecting" || s === "new") {
@@ -412,7 +430,12 @@
           body: { pair_id: pair.pair_id, mode: signalingMode }
         });
       } else {
-        session = await this.waitForPendingSession(pair.pair_id, signalingMode, token);
+        session = await this.waitForPendingSession(
+          pair.pair_id,
+          signalingMode,
+          token,
+          this.previousSessionId
+        );
       }
       if (token !== this.runToken) return;
       this.sessionId = session.session_id;
@@ -447,14 +470,32 @@
       return `Talk • ${peer}`;
     }
 
-    async waitForPendingSession(pairId, wantedMode, token) {
+    async waitForPendingSession(pairId, wantedMode, token, ignoreSessionId = null) {
       while (token === this.runToken && !this.stopping) {
+        if (!navigator.onLine) {
+          setSessionUi("waiting", "Offline", "Waiting for internet connection");
+          await sleep(1200);
+          continue;
+        }
+
         const data = await api(`/api/sessions/pending?pair_id=${encodeURIComponent(pairId)}`, {
           method: "GET"
         });
         const s = data.session;
-        if (s && s.status === "active" && s.mode === wantedMode) return s;
-        await sleep(2500);
+
+        // After a network handover, the old signaling row can briefly remain
+        // active while the peer rebuilds. Never attach a fresh PeerConnection
+        // to that stale SDP/session.
+        if (
+          s &&
+          s.status === "active" &&
+          s.mode === wantedMode &&
+          s.session_id !== ignoreSessionId
+        ) {
+          return s;
+        }
+
+        await sleep(1200);
       }
       throw new Error("Session stopped");
     }
@@ -508,42 +549,86 @@
       poll();
     }
 
-    scheduleReconnect(token) {
+    scheduleReconnect(token, delayMs = 1500) {
       if (this.stopping || token !== this.runToken || this.restartTimer) return;
       clearTimeout(this.disconnectTimer);
+
+      if (!navigator.onLine) {
+        setSessionUi("waiting", "Offline", "Waiting for internet connection");
+        return;
+      }
+
       this.restartTimer = setTimeout(async () => {
         this.restartTimer = null;
         if (this.stopping || token !== this.runToken) return;
+
+        if (!navigator.onLine) {
+          setSessionUi("waiting", "Offline", "Waiting for internet connection");
+          return;
+        }
+
         log("Attempting automatic reconnect");
+        setSessionUi("waiting", "Reconnecting", "Building a fresh WebRTC session");
+
         const mode = this.mode;
         const pair = this.pair;
         await this.cleanupPeer(true);
         this.mode = mode;
         this.pair = pair;
+
         try {
           await this.connectOnce(token);
         } catch (e) {
           if (!this.stopping && token === this.runToken) {
             log("Reconnect failed:", e.message);
-            this.scheduleReconnect(token);
+            this.scheduleReconnect(token, 2500);
           }
         }
-      }, 3000);
+      }, delayMs);
+    }
+
+    handleNetworkOffline() {
+      if (!state.session || this.stopping) return;
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+      setSessionUi("waiting", "Offline", "Internet connection lost");
+      log("Network offline");
+    }
+
+    handleNetworkOnline() {
+      if (!state.session || this.stopping) return;
+      log("Network online / path changed");
+      setSessionUi("waiting", "Reconnecting", "Internet restored");
+      this.scheduleReconnect(this.runToken, 0);
     }
 
     async cleanupPeer(closeRemoteSession) {
       clearTimeout(this.pollTimer);
       clearTimeout(this.pendingTimer);
       clearTimeout(this.disconnectTimer);
+      clearTimeout(this.connectWatchdog);
       this.pollTimer = null;
       this.pendingTimer = null;
       this.disconnectTimer = null;
+      this.connectWatchdog = null;
 
       const id = this.sessionId;
       this.sessionId = null;
-      if (closeRemoteSession && id && state.identity) {
-        api(`/api/sessions/${encodeURIComponent(id)}/close`, { body: {} })
-          .catch(() => {});
+
+      if (id) {
+        this.previousSessionId = id;
+      }
+
+      // Await the close before looking for a replacement session. Without
+      // this, a fast reconnect can immediately pick up the same stale active
+      // session and reuse an obsolete SDP after Wi-Fi/mobile handover.
+      if (closeRemoteSession && id && state.identity && navigator.onLine) {
+        try {
+          await api(`/api/sessions/${encodeURIComponent(id)}/close`, { body: {} });
+          log("Previous signaling session closed", id);
+        } catch (e) {
+          log("Previous session close failed:", e.message);
+        }
       }
 
       if (this.pc) {
@@ -706,6 +791,31 @@
       log("Page moved to background. Mobile browsers may suspend audio/signaling.");
     }
   });
+
+  window.addEventListener("offline", () => controller.handleNetworkOffline());
+  window.addEventListener("online", () => controller.handleNetworkOnline());
+
+  // Chrome/Edge expose network-path changes on many devices. This catches
+  // Wi-Fi -> mobile/hotspot changes that may not generate a full offline event.
+  if (navigator.connection?.addEventListener) {
+    navigator.connection.addEventListener("change", () => {
+      if (!state.session || controller.stopping) return;
+      if (controller.pc?.connectionState === "connected") {
+        log("Network path changed; waiting briefly for ICE to recover");
+        setTimeout(() => {
+          if (
+            state.session &&
+            controller.pc &&
+            controller.pc.connectionState !== "connected"
+          ) {
+            controller.handleNetworkOnline();
+          }
+        }, 1200);
+      } else {
+        controller.handleNetworkOnline();
+      }
+    });
+  }
 
   async function init() {
     els.apiUrl.value = apiBase();

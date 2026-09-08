@@ -1,4 +1,4 @@
-const CACHE = "looplink-web-v0.3.0";
+const CACHE = "looplink-web-v0.3.1";
 const SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", event => {
@@ -16,11 +16,16 @@ self.addEventListener("activate", event => {
 self.addEventListener("fetch", event => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin || event.request.method !== "GET") return;
+
+  // Network-first prevents an old GitHub Pages build from being pinned by
+  // the previous service-worker cache. Cached shell remains an offline fallback.
   event.respondWith(
-    caches.match(event.request).then(hit => hit || fetch(event.request).then(response => {
-      const copy = response.clone();
-      caches.open(CACHE).then(cache => cache.put(event.request, copy));
-      return response;
-    }))
+    fetch(event.request)
+      .then(response => {
+        const copy = response.clone();
+        caches.open(CACHE).then(cache => cache.put(event.request, copy));
+        return response;
+      })
+      .catch(() => caches.match(event.request).then(hit => hit || caches.match("./index.html")))
   );
 });

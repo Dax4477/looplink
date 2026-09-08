@@ -118,3 +118,15 @@ For simultaneous receiving:
 - Android A v0.3 presses **Start Loop Broadcast — ALL Paired Endpoints**.
 
 Both receivers then get Android A's microphone at the same time over separate P2P WebRTC connections.
+
+
+## v0.3.1 network resilience
+
+Fixes a reconnect loop after Wi-Fi/mobile/hotspot changes.
+
+- waits for the obsolete signaling session to close before reconnecting
+- never reuses the immediately previous WebRTC session ID
+- reacts to browser online/offline events
+- reacts to supported Network Information API path changes
+- 18-second connection watchdog prevents endless `connecting`
+- service worker is network-first so GitHub Pages updates are not pinned by old cache
