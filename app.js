@@ -276,30 +276,125 @@
     }[c]));
   }
 
+  class SignalChannel {
+    constructor(pairId) {
+      this.pairId = pairId;
+      this.ws = null;
+      this.queue = [];
+      this.waiters = [];
+      this.failed = null;
+      this.onControl = null;
+    }
+
+    static async connect(pairId) {
+      const ticketData = await api("/api/signal-ticket", { body: { pair_id: pairId } });
+      const base = apiBase();
+      const wsBase = base.startsWith("https://") ? `wss://${base.slice(8)}` : `ws://${base.slice(7)}`;
+      const channel = new SignalChannel(pairId);
+      await channel.open(`${wsBase}/api/signal?ticket=${encodeURIComponent(ticketData.ticket)}`);
+      return channel;
+    }
+
+    open(url) {
+      return new Promise((resolve, reject) => {
+        const ws = new WebSocket(url);
+        this.ws = ws;
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            try { ws.close(); } catch {}
+            reject(new Error("WebSocket connection timed out"));
+          }
+        }, 15000);
+        ws.onopen = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve();
+        };
+        ws.onmessage = (event) => {
+          try { this.dispatch(JSON.parse(event.data)); } catch {}
+        };
+        ws.onerror = () => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            reject(new Error("WebSocket connection failed"));
+          }
+        };
+        ws.onclose = (event) => {
+          const error = new Error(`Signaling socket closed (${event.code || 1006})`);
+          this.fail(error);
+          if (this.onControl) this.onControl({ type: "socket-closed", reason: error.message });
+        };
+      });
+    }
+
+    dispatch(message) {
+      if (["peer-offline", "close", "socket-closed"].includes(message.type) && this.onControl) {
+        this.onControl(message);
+      }
+      for (let i = 0; i < this.waiters.length; i++) {
+        const waiter = this.waiters[i];
+        if (waiter.predicate(message)) {
+          this.waiters.splice(i, 1);
+          waiter.resolve(message);
+          return;
+        }
+      }
+      this.queue.push(message);
+      if (this.queue.length > 200) this.queue.shift();
+    }
+
+    waitFor(predicate) {
+      if (this.failed) return Promise.reject(this.failed);
+      const index = this.queue.findIndex(predicate);
+      if (index >= 0) return Promise.resolve(this.queue.splice(index, 1)[0]);
+      return new Promise((resolve, reject) => this.waiters.push({ predicate, resolve, reject }));
+    }
+
+    fail(error) {
+      if (this.failed) return;
+      this.failed = error;
+      for (const waiter of this.waiters.splice(0)) waiter.reject(error);
+    }
+
+    send(message) {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+      this.ws.send(JSON.stringify(message));
+      return true;
+    }
+
+    close(sessionId = null) {
+      if (sessionId) this.send({ type: "close", session_id: sessionId });
+      try { this.ws?.close(1000, "LoopLink session closed"); } catch {}
+      this.ws = null;
+    }
+  }
+
   class WebRtcSessionController {
     constructor() {
       this.pc = null;
+      this.signal = null;
       this.localStream = null;
-      this.sessionId = null;
-      this.pollTimer = null;
-      this.pendingTimer = null;
-      this.lastCandidateId = 0;
       this.mode = null;
       this.pair = null;
-      this.micEnabled = false;
+      this.sessionId = null;
+      this.previousSessionId = null;
+      this.pendingRemoteCandidates = [];
       this.restartTimer = null;
       this.disconnectTimer = null;
       this.connectWatchdog = null;
-      this.previousSessionId = null;
       this.runToken = 0;
       this.stopping = false;
+      this.micEnabled = false;
     }
 
     async start(mode) {
       requireIdentity();
       const pair = selectedPair();
       await this.stop(false);
-
       this.mode = mode;
       this.pair = pair;
       this.stopping = false;
@@ -309,8 +404,7 @@
       this.setButtons(true);
       setSessionUi("waiting", mode === "listen" ? "Waiting" : "Connecting",
         mode === "listen" ? `Waiting for ${pair.peer_display_name}` : `Connecting to ${pair.peer_display_name}`);
-      log(`Starting ${mode}`, pair);
-
+      log(`Starting ${mode} with WebSocket signaling`, pair);
       try {
         await this.connectOnce(token);
       } catch (e) {
@@ -325,7 +419,41 @@
       const identity = requireIdentity();
       const pair = this.pair;
       const mode = this.mode;
+      const initiator = mode === "transmit" ||
+        (mode === "talk" && identity.deviceId < pair.peer_device_id);
+      const signalingMode = mode === "talk" ? "talk" : "loop";
 
+      this.signal = await SignalChannel.connect(pair.pair_id);
+      if (token !== this.runToken) return;
+      this.signal.onControl = (message) => {
+        if (this.stopping || token !== this.runToken) return;
+        if (message.type === "close" && message.session_id && message.session_id !== this.sessionId) return;
+        log("Signaling control:", message.type);
+        this.scheduleReconnect(token, 0);
+      };
+      log("WebSocket signaling connected");
+
+      if (initiator) {
+        this.sessionId = crypto.randomUUID();
+        this.signal.send({ type: "start", session_id: this.sessionId, mode: signalingMode });
+        await this.signal.waitFor(m => m.type === "session-ready" && m.session_id === this.sessionId);
+      } else {
+        this.signal.send({
+          type: "ready",
+          mode: signalingMode,
+          ignore_session_id: this.previousSessionId || undefined,
+        });
+        const start = await this.signal.waitFor(m =>
+          m.type === "session-start" &&
+          m.mode === signalingMode &&
+          m.session_id !== this.previousSessionId
+        );
+        this.sessionId = start.session_id;
+        this.signal.send({ type: "session-ready", session_id: this.sessionId });
+      }
+      if (token !== this.runToken) return;
+
+      // TURN credentials are fetched only once a peer is actually ready.
       const iceData = await api("/api/ice-servers", { body: {} });
       if (token !== this.runToken) return;
       const iceServers = (iceData.iceServers || []).map(s => ({
@@ -335,44 +463,30 @@
       }));
       log("ICE servers loaded", { count: iceServers.length, turn: !!iceData.turn_enabled });
 
-      this.pc = new RTCPeerConnection({
-        iceServers,
-        iceCandidatePoolSize: 2,
-      });
-
-      clearTimeout(this.connectWatchdog);
-      this.connectWatchdog = setTimeout(() => {
-        if (
-          token === this.runToken &&
-          !this.stopping &&
-          this.pc &&
-          this.pc.connectionState !== "connected"
-        ) {
-          log("Connection watchdog triggered");
-          setSessionUi("waiting", "Reconnecting", "Connection negotiation timed out");
-          this.scheduleReconnect(token, 0);
-        }
-      }, 18000);
+      this.pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 2 });
+      this.pendingRemoteCandidates = [];
 
       this.pc.ontrack = (event) => {
         const stream = event.streams?.[0] || new MediaStream([event.track]);
         els.remoteAudio.srcObject = stream;
-        els.remoteAudio.play().catch(() => {
-          toast("Tap 'Enable remote audio' if sound is blocked.");
-        });
+        els.remoteAudio.play().catch(() => toast("Tap 'Enable remote audio' if sound is blocked."));
         log("Remote audio track received");
       };
 
       this.pc.onicecandidate = (event) => {
         if (!event.candidate || !this.sessionId || token !== this.runToken) return;
-        api(`/api/sessions/${encodeURIComponent(this.sessionId)}/candidates`, {
-          body: {
-            sdp_mid: event.candidate.sdpMid,
-            sdp_mline_index: event.candidate.sdpMLineIndex ?? 0,
-            candidate: event.candidate.candidate,
-          }
-        }).catch(e => log("ICE candidate upload failed:", e.message));
+        this.signal?.send({
+          type: "candidate",
+          session_id: this.sessionId,
+          sdp_mid: event.candidate.sdpMid,
+          sdp_mline_index: event.candidate.sdpMLineIndex ?? 0,
+          candidate: event.candidate.candidate,
+        });
       };
+
+      this.signalCandidateLoop(token).catch(e => {
+        if (!this.stopping && token === this.runToken) log("Signal candidate loop:", e.message);
+      });
 
       this.pc.onconnectionstatechange = () => {
         if (!this.pc || token !== this.runToken) return;
@@ -392,10 +506,7 @@
           this.disconnectTimer = setTimeout(() => {
             if (this.pc?.connectionState === "disconnected") this.scheduleReconnect(token);
           }, 8000);
-        } else if (s === "failed") {
-          setSessionUi("error", "Reconnecting", "WebRTC connection failed");
-          this.scheduleReconnect(token);
-        } else if (s === "closed" && !this.stopping) {
+        } else if (s === "failed" || (s === "closed" && !this.stopping)) {
           this.scheduleReconnect(token);
         }
       };
@@ -403,63 +514,65 @@
       const wantsMic = mode !== "listen";
       if (wantsMic) {
         this.localStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
           video: false,
         });
         if (token !== this.runToken) return;
-        for (const track of this.localStream.getAudioTracks()) {
-          this.pc.addTrack(track, this.localStream);
-        }
+        for (const track of this.localStream.getAudioTracks()) this.pc.addTrack(track, this.localStream);
         this.micEnabled = true;
       } else {
         this.micEnabled = false;
       }
       this.renderMic();
 
-      const initiator = mode === "transmit" ||
-        (mode === "talk" && identity.deviceId < pair.peer_device_id);
-      const signalingMode = mode === "talk" ? "talk" : "loop";
-
-      let session;
-      if (initiator) {
-        session = await api("/api/sessions/start", {
-          body: { pair_id: pair.pair_id, mode: signalingMode }
-        });
-      } else {
-        session = await this.waitForPendingSession(
-          pair.pair_id,
-          signalingMode,
-          token,
-          this.previousSessionId
-        );
-      }
-      if (token !== this.runToken) return;
-      this.sessionId = session.session_id;
-      this.lastCandidateId = 0;
-      this.startCandidatePolling(token);
+      clearTimeout(this.connectWatchdog);
+      this.connectWatchdog = setTimeout(() => {
+        if (token === this.runToken && !this.stopping && this.pc?.connectionState !== "connected") {
+          log("Connection watchdog triggered");
+          this.scheduleReconnect(token, 0);
+        }
+      }, 18000);
 
       if (initiator) {
         const offer = await this.pc.createOffer({ offerToReceiveAudio: true });
         await this.pc.setLocalDescription(offer);
-        await api(`/api/sessions/${encodeURIComponent(this.sessionId)}/offer`, {
-          body: { sdp: this.pc.localDescription.sdp }
-        });
-        const answerSdp = await this.waitForAnswer(this.sessionId, token);
+        this.signal.send({ type: "offer", session_id: this.sessionId, sdp: this.pc.localDescription.sdp });
+        const answer = await this.signal.waitFor(m => m.type === "answer" && m.session_id === this.sessionId);
         if (token !== this.runToken) return;
-        await this.pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+        await this.pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+        await this.flushRemoteCandidates();
       } else {
-        const offerSdp = await this.waitForOffer(this.sessionId, token);
+        const offer = await this.signal.waitFor(m => m.type === "offer" && m.session_id === this.sessionId);
         if (token !== this.runToken) return;
-        await this.pc.setRemoteDescription({ type: "offer", sdp: offerSdp });
+        await this.pc.setRemoteDescription({ type: "offer", sdp: offer.sdp });
+        await this.flushRemoteCandidates();
         const answer = await this.pc.createAnswer();
         await this.pc.setLocalDescription(answer);
-        await api(`/api/sessions/${encodeURIComponent(this.sessionId)}/answer`, {
-          body: { sdp: this.pc.localDescription.sdp }
-        });
+        this.signal.send({ type: "answer", session_id: this.sessionId, sdp: this.pc.localDescription.sdp });
+      }
+    }
+
+    async signalCandidateLoop(token) {
+      while (token === this.runToken && !this.stopping && this.signal) {
+        const message = await this.signal.waitFor(m => m.type === "candidate" && m.session_id === this.sessionId);
+        const candidate = {
+          candidate: message.candidate,
+          sdpMid: message.sdp_mid,
+          sdpMLineIndex: message.sdp_mline_index,
+        };
+        if (this.pc?.remoteDescription) {
+          try { await this.pc.addIceCandidate(candidate); }
+          catch (e) { log("Remote ICE candidate rejected:", e.message); }
+        } else {
+          this.pendingRemoteCandidates.push(candidate);
+        }
+      }
+    }
+
+    async flushRemoteCandidates() {
+      for (const candidate of this.pendingRemoteCandidates.splice(0)) {
+        try { await this.pc.addIceCandidate(candidate); }
+        catch (e) { log("Buffered ICE candidate rejected:", e.message); }
       }
     }
 
@@ -470,112 +583,21 @@
       return `Talk • ${peer}`;
     }
 
-    async waitForPendingSession(pairId, wantedMode, token, ignoreSessionId = null) {
-      while (token === this.runToken && !this.stopping) {
-        if (!navigator.onLine) {
-          setSessionUi("waiting", "Offline", "Waiting for internet connection");
-          await sleep(1200);
-          continue;
-        }
-
-        const data = await api(`/api/sessions/pending?pair_id=${encodeURIComponent(pairId)}`, {
-          method: "GET"
-        });
-        const s = data.session;
-
-        // After a network handover, the old signaling row can briefly remain
-        // active while the peer rebuilds. Never attach a fresh PeerConnection
-        // to that stale SDP/session.
-        if (
-          s &&
-          s.status === "active" &&
-          s.mode === wantedMode &&
-          s.session_id !== ignoreSessionId
-        ) {
-          return s;
-        }
-
-        await sleep(1200);
-      }
-      throw new Error("Session stopped");
-    }
-
-    async waitForOffer(sessionId, token) {
-      while (token === this.runToken && !this.stopping) {
-        const s = await api(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "GET" });
-        if (s.offer_sdp) return s.offer_sdp;
-        if (s.status !== "active") throw new Error("Session closed before offer");
-        await sleep(700);
-      }
-      throw new Error("Session stopped");
-    }
-
-    async waitForAnswer(sessionId, token) {
-      while (token === this.runToken && !this.stopping) {
-        const s = await api(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "GET" });
-        if (s.answer_sdp) return s.answer_sdp;
-        if (s.status !== "active") throw new Error("Session closed before answer");
-        await sleep(700);
-      }
-      throw new Error("Session stopped");
-    }
-
-    startCandidatePolling(token) {
-      const poll = async () => {
-        if (token !== this.runToken || !this.sessionId || !this.pc || this.stopping) return;
-        try {
-          const data = await api(
-            `/api/sessions/${encodeURIComponent(this.sessionId)}/candidates?after=${this.lastCandidateId}`,
-            { method: "GET" }
-          );
-          for (const item of (data.items || [])) {
-            try {
-              await this.pc.addIceCandidate({
-                candidate: item.candidate,
-                sdpMid: item.sdp_mid,
-                sdpMLineIndex: item.sdp_mline_index,
-              });
-              this.lastCandidateId = Math.max(this.lastCandidateId, Number(item.id) || 0);
-            } catch (e) {
-              log("Remote ICE candidate rejected:", e.message);
-            }
-          }
-        } catch (e) {
-          log("ICE polling error:", e.message);
-        }
-        const delay = this.pc?.connectionState === "connected" ? 4500 : 650;
-        this.pollTimer = setTimeout(poll, delay);
-      };
-      poll();
-    }
-
     scheduleReconnect(token, delayMs = 1500) {
       if (this.stopping || token !== this.runToken || this.restartTimer) return;
       clearTimeout(this.disconnectTimer);
-
       if (!navigator.onLine) {
         setSessionUi("waiting", "Offline", "Waiting for internet connection");
         return;
       }
-
       this.restartTimer = setTimeout(async () => {
         this.restartTimer = null;
         if (this.stopping || token !== this.runToken) return;
-
-        if (!navigator.onLine) {
-          setSessionUi("waiting", "Offline", "Waiting for internet connection");
-          return;
-        }
-
-        log("Attempting automatic reconnect");
-        setSessionUi("waiting", "Reconnecting", "Building a fresh WebRTC session");
-
         const mode = this.mode;
         const pair = this.pair;
         await this.cleanupPeer(true);
         this.mode = mode;
         this.pair = pair;
-
         try {
           await this.connectOnce(token);
         } catch (e) {
@@ -603,34 +625,20 @@
     }
 
     async cleanupPeer(closeRemoteSession) {
-      clearTimeout(this.pollTimer);
-      clearTimeout(this.pendingTimer);
       clearTimeout(this.disconnectTimer);
       clearTimeout(this.connectWatchdog);
-      this.pollTimer = null;
-      this.pendingTimer = null;
       this.disconnectTimer = null;
       this.connectWatchdog = null;
-
       const id = this.sessionId;
+      if (id) this.previousSessionId = id;
+      if (this.signal) {
+        // Manual cleanup must not be interpreted as an unexpected network close.
+        this.signal.onControl = null;
+        if (closeRemoteSession) this.signal.close(id);
+        else this.signal.close();
+        this.signal = null;
+      }
       this.sessionId = null;
-
-      if (id) {
-        this.previousSessionId = id;
-      }
-
-      // Await the close before looking for a replacement session. Without
-      // this, a fast reconnect can immediately pick up the same stale active
-      // session and reuse an obsolete SDP after Wi-Fi/mobile handover.
-      if (closeRemoteSession && id && state.identity && navigator.onLine) {
-        try {
-          await api(`/api/sessions/${encodeURIComponent(id)}/close`, { body: {} });
-          log("Previous signaling session closed", id);
-        } catch (e) {
-          log("Previous session close failed:", e.message);
-        }
-      }
-
       if (this.pc) {
         try { this.pc.onconnectionstatechange = null; this.pc.onicecandidate = null; this.pc.ontrack = null; } catch {}
         try { this.pc.close(); } catch {}
@@ -640,6 +648,7 @@
         for (const track of this.localStream.getTracks()) track.stop();
         this.localStream = null;
       }
+      this.pendingRemoteCandidates = [];
       els.remoteAudio.srcObject = null;
       this.micEnabled = false;
       this.renderMic();
