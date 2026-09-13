@@ -1,4 +1,4 @@
-# LoopLink Web v0.4.0
+# LoopLink Web v0.4.1
 
 GitHub Pages / static browser client for LoopLink v0.4 WebSocket signaling.
 

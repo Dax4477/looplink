@@ -1,4 +1,4 @@
-const CACHE = "looplink-web-v0.4.0";
+const CACHE = "looplink-web-v0.4.1";
 const SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", event => {

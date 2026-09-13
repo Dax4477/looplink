@@ -284,6 +284,8 @@
       this.waiters = [];
       this.failed = null;
       this.onControl = null;
+      this.closedByUs = false;
+      this.superseded = false;
     }
 
     static async connect(pairId) {
@@ -324,15 +326,27 @@
           }
         };
         ws.onclose = (event) => {
-          const error = new Error(`Signaling socket closed (${event.code || 1006})`);
+          if (this.closedByUs) return;
+          const code = event.code || 1006;
+          const isSuperseded = code === 4001 || this.superseded;
+          const error = new Error(`Signaling socket closed (${code})`);
+          error.code = code;
+          error.superseded = isSuperseded;
           this.fail(error);
-          if (this.onControl) this.onControl({ type: "socket-closed", reason: error.message });
+          if (this.onControl) {
+            this.onControl({
+              type: isSuperseded ? "socket-superseded" : "socket-closed",
+              code,
+              reason: error.message,
+            });
+          }
         };
       });
     }
 
     dispatch(message) {
-      if (["peer-offline", "close", "socket-closed"].includes(message.type) && this.onControl) {
+      if (message.type === "superseded") this.superseded = true;
+      if (["peer-offline", "peer-online", "close", "socket-closed", "superseded"].includes(message.type) && this.onControl) {
         this.onControl(message);
       }
       for (let i = 0; i < this.waiters.length; i++) {
@@ -367,6 +381,7 @@
     }
 
     close(sessionId = null) {
+      this.closedByUs = true;
       if (sessionId) this.send({ type: "close", session_id: sessionId });
       try { this.ws?.close(1000, "LoopLink session closed"); } catch {}
       this.ws = null;
@@ -386,8 +401,10 @@
       this.restartTimer = null;
       this.disconnectTimer = null;
       this.connectWatchdog = null;
+      this.peerOfflineTimer = null;
       this.runToken = 0;
       this.stopping = false;
+      this.reconnectBackoffMs = 1500;
       this.micEnabled = false;
     }
 
@@ -429,7 +446,42 @@
         if (this.stopping || token !== this.runToken) return;
         if (message.type === "close" && message.session_id && message.session_id !== this.sessionId) return;
         log("Signaling control:", message.type);
-        this.scheduleReconnect(token, 0);
+
+        if (message.type === "peer-offline") {
+          // A peer changing networks must not immediately tear down our own healthy
+          // signaling socket. Give a mid-handshake peer time to return; established
+          // WebRTC uses its own connection-state recovery. A listener with no active
+          // session simply keeps waiting without generating more cloud requests.
+          if (!this.pc || this.pc.connectionState !== "connected") {
+            setSessionUi("waiting", "Waiting", "Paired device is temporarily offline");
+          }
+          clearTimeout(this.peerOfflineTimer);
+          if (this.sessionId && this.pc?.connectionState !== "connected") {
+            this.peerOfflineTimer = setTimeout(() => {
+              if (!this.stopping && token === this.runToken && this.pc?.connectionState !== "connected") {
+                this.scheduleReconnect(token);
+              }
+            }, 8000);
+          }
+          return;
+        }
+        if (message.type === "peer-online") {
+          clearTimeout(this.peerOfflineTimer);
+          this.peerOfflineTimer = null;
+          return;
+        }
+
+        if (message.type === "superseded" || message.type === "socket-superseded") {
+          // Most commonly another tab of the same browser/device became active.
+          // The old tab must relinquish instead of reconnecting and fighting the
+          // new tab forever.
+          this.relinquishSuperseded();
+          return;
+        }
+
+        // A real local signaling failure or a close of the current session needs
+        // a reconnect. Use backoff rather than an immediate retry storm.
+        this.scheduleReconnect(token);
       };
       log("WebSocket signaling connected");
 
@@ -493,6 +545,9 @@
         const s = this.pc.connectionState;
         log(`Peer state: ${s}`);
         if (s === "connected") {
+          this.reconnectBackoffMs = 1500;
+          clearTimeout(this.peerOfflineTimer);
+          this.peerOfflineTimer = null;
           clearTimeout(this.disconnectTimer);
           clearTimeout(this.connectWatchdog);
           this.connectWatchdog = null;
@@ -583,13 +638,15 @@
       return `Talk • ${peer}`;
     }
 
-    scheduleReconnect(token, delayMs = 1500) {
+    scheduleReconnect(token, delayMs = null) {
       if (this.stopping || token !== this.runToken || this.restartTimer) return;
       clearTimeout(this.disconnectTimer);
       if (!navigator.onLine) {
         setSessionUi("waiting", "Offline", "Waiting for internet connection");
         return;
       }
+      const delay = delayMs == null ? this.reconnectBackoffMs : delayMs;
+      if (delayMs == null) this.reconnectBackoffMs = Math.min(Math.round(this.reconnectBackoffMs * 1.8), 30000);
       this.restartTimer = setTimeout(async () => {
         this.restartTimer = null;
         if (this.stopping || token !== this.runToken) return;
@@ -603,10 +660,28 @@
         } catch (e) {
           if (!this.stopping && token === this.runToken) {
             log("Reconnect failed:", e.message);
-            this.scheduleReconnect(token, 2500);
+            this.scheduleReconnect(token);
           }
         }
-      }, delayMs);
+      }, delay);
+    }
+
+    async relinquishSuperseded() {
+      if (this.stopping) return;
+      this.stopping = true;
+      ++this.runToken;
+      state.token = this.runToken;
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+      await this.cleanupPeer(false);
+      this.mode = null;
+      this.pair = null;
+      state.session = null;
+      this.setButtons(false);
+      els.peerStateBadge.textContent = "PAUSED";
+      setSessionUi("waiting", "Another tab is active", "This LoopLink tab stopped signaling to prevent duplicate reconnects.");
+      this.stopping = false;
+      log("Signaling relinquished because another connection for this device became active");
     }
 
     handleNetworkOffline() {
@@ -620,6 +695,7 @@
     handleNetworkOnline() {
       if (!state.session || this.stopping) return;
       log("Network online / path changed");
+      this.reconnectBackoffMs = 1500;
       setSessionUi("waiting", "Reconnecting", "Internet restored");
       this.scheduleReconnect(this.runToken, 0);
     }
@@ -627,6 +703,7 @@
     async cleanupPeer(closeRemoteSession) {
       clearTimeout(this.disconnectTimer);
       clearTimeout(this.connectWatchdog);
+      clearTimeout(this.peerOfflineTimer);
       this.disconnectTimer = null;
       this.connectWatchdog = null;
       const id = this.sessionId;
