@@ -405,6 +405,8 @@
       this.runToken = 0;
       this.stopping = false;
       this.reconnectBackoffMs = 1500;
+      this.attemptSerial = 0;
+      this.activeAttempt = 0;
       this.micEnabled = false;
     }
 
@@ -416,6 +418,8 @@
       this.pair = pair;
       this.stopping = false;
       const token = ++this.runToken;
+      const attempt = ++this.attemptSerial;
+      this.activeAttempt = attempt;
       state.token = token;
       state.session = { mode, pairId: pair.pair_id };
       this.setButtons(true);
@@ -423,16 +427,16 @@
         mode === "listen" ? `Waiting for ${pair.peer_display_name}` : `Connecting to ${pair.peer_display_name}`);
       log(`Starting ${mode} with WebSocket signaling`, pair);
       try {
-        await this.connectOnce(token);
+        await this.connectOnce(token, attempt);
       } catch (e) {
-        if (token !== this.runToken || this.stopping) return;
+        if (token !== this.runToken || attempt !== this.activeAttempt || this.stopping) return;
         setSessionUi("error", "Connection error", e.message);
         log("Session error:", e.message);
-        this.scheduleReconnect(token);
+        this.scheduleReconnect(token, attempt);
       }
     }
 
-    async connectOnce(token) {
+    async connectOnce(token, attempt) {
       const identity = requireIdentity();
       const pair = this.pair;
       const mode = this.mode;
@@ -440,28 +444,24 @@
         (mode === "talk" && identity.deviceId < pair.peer_device_id);
       const signalingMode = mode === "talk" ? "talk" : "loop";
 
-      this.signal = await SignalChannel.connect(pair.pair_id);
-      if (token !== this.runToken) return;
-      this.signal.onControl = (message) => {
-        if (this.stopping || token !== this.runToken) return;
+      const signal = await SignalChannel.connect(pair.pair_id);
+      if (token !== this.runToken || attempt !== this.activeAttempt || this.stopping) {
+        signal.close();
+        return;
+      }
+      this.signal = signal;
+      signal.onControl = (message) => {
+        if (this.stopping || token !== this.runToken || attempt !== this.activeAttempt) return;
         if (message.type === "close" && message.session_id && message.session_id !== this.sessionId) return;
         log("Signaling control:", message.type);
 
         if (message.type === "peer-offline") {
-          // A peer changing networks must not immediately tear down our own healthy
-          // signaling socket. Give a mid-handshake peer time to return; established
-          // WebRTC uses its own connection-state recovery. A listener with no active
-          // session simply keeps waiting without generating more cloud requests.
+          // Presence is advisory. Keep our signaling socket alive and let the peer
+          // reconnect into the same room. Closing/reopening here created a mutual
+          // reconnect cascade in v0.4.0/v0.4.1. WebRTC state/watchdog decides when
+          // an actual media negotiation must be restarted.
           if (!this.pc || this.pc.connectionState !== "connected") {
             setSessionUi("waiting", "Waiting", "Paired device is temporarily offline");
-          }
-          clearTimeout(this.peerOfflineTimer);
-          if (this.sessionId && this.pc?.connectionState !== "connected") {
-            this.peerOfflineTimer = setTimeout(() => {
-              if (!this.stopping && token === this.runToken && this.pc?.connectionState !== "connected") {
-                this.scheduleReconnect(token);
-              }
-            }, 8000);
           }
           return;
         }
@@ -481,33 +481,33 @@
 
         // A real local signaling failure or a close of the current session needs
         // a reconnect. Use backoff rather than an immediate retry storm.
-        this.scheduleReconnect(token);
+        this.scheduleReconnect(token, attempt);
       };
       log("WebSocket signaling connected");
 
       if (initiator) {
         this.sessionId = crypto.randomUUID();
-        this.signal.send({ type: "start", session_id: this.sessionId, mode: signalingMode });
-        await this.signal.waitFor(m => m.type === "session-ready" && m.session_id === this.sessionId);
+        signal.send({ type: "start", session_id: this.sessionId, mode: signalingMode });
+        await signal.waitFor(m => m.type === "session-ready" && m.session_id === this.sessionId);
       } else {
-        this.signal.send({
+        signal.send({
           type: "ready",
           mode: signalingMode,
           ignore_session_id: this.previousSessionId || undefined,
         });
-        const start = await this.signal.waitFor(m =>
+        const start = await signal.waitFor(m =>
           m.type === "session-start" &&
           m.mode === signalingMode &&
           m.session_id !== this.previousSessionId
         );
         this.sessionId = start.session_id;
-        this.signal.send({ type: "session-ready", session_id: this.sessionId });
+        signal.send({ type: "session-ready", session_id: this.sessionId });
       }
-      if (token !== this.runToken) return;
+      if (token !== this.runToken || attempt !== this.activeAttempt) return;
 
       // TURN credentials are fetched only once a peer is actually ready.
       const iceData = await api("/api/ice-servers", { body: {} });
-      if (token !== this.runToken) return;
+      if (token !== this.runToken || attempt !== this.activeAttempt) return;
       const iceServers = (iceData.iceServers || []).map(s => ({
         urls: s.urls,
         username: s.username || undefined,
@@ -536,8 +536,8 @@
         });
       };
 
-      this.signalCandidateLoop(token).catch(e => {
-        if (!this.stopping && token === this.runToken) log("Signal candidate loop:", e.message);
+      this.signalCandidateLoop(token, attempt, signal, this.sessionId).catch(e => {
+        if (!this.stopping && token === this.runToken && attempt === this.activeAttempt) log("Signal candidate loop:", e.message);
       });
 
       this.pc.onconnectionstatechange = () => {
@@ -559,10 +559,10 @@
           setSessionUi("waiting", "Reconnecting", "Network interruption detected");
           clearTimeout(this.disconnectTimer);
           this.disconnectTimer = setTimeout(() => {
-            if (this.pc?.connectionState === "disconnected") this.scheduleReconnect(token);
+            if (this.pc?.connectionState === "disconnected") this.scheduleReconnect(token, attempt);
           }, 8000);
         } else if (s === "failed" || (s === "closed" && !this.stopping)) {
-          this.scheduleReconnect(token);
+          this.scheduleReconnect(token, attempt);
         }
       };
 
@@ -572,7 +572,7 @@
           audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
           video: false,
         });
-        if (token !== this.runToken) return;
+        if (token !== this.runToken || attempt !== this.activeAttempt) return;
         for (const track of this.localStream.getAudioTracks()) this.pc.addTrack(track, this.localStream);
         this.micEnabled = true;
       } else {
@@ -584,32 +584,32 @@
       this.connectWatchdog = setTimeout(() => {
         if (token === this.runToken && !this.stopping && this.pc?.connectionState !== "connected") {
           log("Connection watchdog triggered");
-          this.scheduleReconnect(token, 0);
+          this.scheduleReconnect(token, attempt, 0);
         }
       }, 18000);
 
       if (initiator) {
         const offer = await this.pc.createOffer({ offerToReceiveAudio: true });
         await this.pc.setLocalDescription(offer);
-        this.signal.send({ type: "offer", session_id: this.sessionId, sdp: this.pc.localDescription.sdp });
-        const answer = await this.signal.waitFor(m => m.type === "answer" && m.session_id === this.sessionId);
-        if (token !== this.runToken) return;
+        signal.send({ type: "offer", session_id: this.sessionId, sdp: this.pc.localDescription.sdp });
+        const answer = await signal.waitFor(m => m.type === "answer" && m.session_id === this.sessionId);
+        if (token !== this.runToken || attempt !== this.activeAttempt) return;
         await this.pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
         await this.flushRemoteCandidates();
       } else {
-        const offer = await this.signal.waitFor(m => m.type === "offer" && m.session_id === this.sessionId);
-        if (token !== this.runToken) return;
+        const offer = await signal.waitFor(m => m.type === "offer" && m.session_id === this.sessionId);
+        if (token !== this.runToken || attempt !== this.activeAttempt) return;
         await this.pc.setRemoteDescription({ type: "offer", sdp: offer.sdp });
         await this.flushRemoteCandidates();
         const answer = await this.pc.createAnswer();
         await this.pc.setLocalDescription(answer);
-        this.signal.send({ type: "answer", session_id: this.sessionId, sdp: this.pc.localDescription.sdp });
+        signal.send({ type: "answer", session_id: this.sessionId, sdp: this.pc.localDescription.sdp });
       }
     }
 
-    async signalCandidateLoop(token) {
-      while (token === this.runToken && !this.stopping && this.signal) {
-        const message = await this.signal.waitFor(m => m.type === "candidate" && m.session_id === this.sessionId);
+    async signalCandidateLoop(token, attempt, signal, sessionId) {
+      while (token === this.runToken && attempt === this.activeAttempt && !this.stopping) {
+        const message = await signal.waitFor(m => m.type === "candidate" && m.session_id === sessionId);
         const candidate = {
           candidate: message.candidate,
           sdpMid: message.sdp_mid,
@@ -638,8 +638,8 @@
       return `Talk • ${peer}`;
     }
 
-    scheduleReconnect(token, delayMs = null) {
-      if (this.stopping || token !== this.runToken || this.restartTimer) return;
+    scheduleReconnect(token, attempt, delayMs = null) {
+      if (this.stopping || token !== this.runToken || attempt !== this.activeAttempt || this.restartTimer) return;
       clearTimeout(this.disconnectTimer);
       if (!navigator.onLine) {
         setSessionUi("waiting", "Offline", "Waiting for internet connection");
@@ -649,18 +649,24 @@
       if (delayMs == null) this.reconnectBackoffMs = Math.min(Math.round(this.reconnectBackoffMs * 1.8), 30000);
       this.restartTimer = setTimeout(async () => {
         this.restartTimer = null;
-        if (this.stopping || token !== this.runToken) return;
+        if (this.stopping || token !== this.runToken || attempt !== this.activeAttempt) return;
         const mode = this.mode;
         const pair = this.pair;
-        await this.cleanupPeer(true);
+
+        // Invalidate the previous async connectOnce before touching shared state.
+        // Automatic recovery closes only our local socket; it does NOT send a
+        // remote session-close, which previously made both endpoints restart each other.
+        const nextAttempt = ++this.attemptSerial;
+        this.activeAttempt = nextAttempt;
+        await this.cleanupPeer(false);
         this.mode = mode;
         this.pair = pair;
         try {
-          await this.connectOnce(token);
+          await this.connectOnce(token, nextAttempt);
         } catch (e) {
-          if (!this.stopping && token === this.runToken) {
+          if (!this.stopping && token === this.runToken && nextAttempt === this.activeAttempt) {
             log("Reconnect failed:", e.message);
-            this.scheduleReconnect(token);
+            this.scheduleReconnect(token, nextAttempt);
           }
         }
       }, delay);
@@ -670,6 +676,7 @@
       if (this.stopping) return;
       this.stopping = true;
       ++this.runToken;
+      this.activeAttempt = ++this.attemptSerial;
       state.token = this.runToken;
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
@@ -697,7 +704,7 @@
       log("Network online / path changed");
       this.reconnectBackoffMs = 1500;
       setSessionUi("waiting", "Reconnecting", "Internet restored");
-      this.scheduleReconnect(this.runToken, 0);
+      this.scheduleReconnect(this.runToken, this.activeAttempt, 0);
     }
 
     async cleanupPeer(closeRemoteSession) {
@@ -734,6 +741,7 @@
     async stop(updateUi = true) {
       this.stopping = true;
       ++this.runToken;
+      this.activeAttempt = ++this.attemptSerial;
       state.token = this.runToken;
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
