@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#07120f">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>LoopLink Admin</title>
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <span class="eyebrow">LOOPLINK CONTROL PLANE</span>
+      <h1>Admin Dashboard</h1>
+      <p>Permanent device registry, PINs and remote Android mode control.</p>
+    </div>
+    <div id="cloudState" class="pill">Not connected</div>
+  </header>
+
+  <main>
+    <section class="card login">
+      <div class="field">
+        <label for="apiUrl">Worker URL</label>
+        <input id="apiUrl" type="url" value="https://looplink-api.obserax.workers.dev">
+      </div>
+      <div class="field grow">
+        <label for="adminToken">Admin token</label>
+        <input id="adminToken" type="password" autocomplete="current-password" placeholder="LOOPLINK_ADMIN_TOKEN">
+      </div>
+      <button id="connectBtn" class="primary">Connect</button>
+      <button id="refreshBtn">Refresh</button>
+    </section>
+
+    <section class="stats">
+      <div class="stat card"><span>Devices</span><strong id="deviceCount">0</strong></div>
+      <div class="stat card"><span>Online</span><strong id="onlineCount">0</strong></div>
+      <div class="stat card"><span>Paired endpoints</span><strong id="pairCount">0</strong></div>
+    </section>
+
+    <section class="card">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">MANAGED ANDROID DEVICES</span>
+          <h2>Device Registry</h2>
+        </div>
+        <small id="lastRefresh">Never refreshed</small>
+      </div>
+
+      <div id="emptyState" class="empty">Connect with your admin token to load devices.</div>
+      <div id="deviceList" class="device-list"></div>
+    </section>
+
+    <section class="card notes">
+      <strong>Mode behavior</strong>
+      <p>Transmit targets the primary paired endpoint. Broadcast targets all paired endpoints. Talk requires the paired endpoint to also use Talk. Stop ends the Android audio foreground service; the desired mode remains stored until you change it again.</p>
+      <p>The dashboard token is stored only in this browser tab's session storage. For production, also protect the admin page with Cloudflare Access.</p>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="admin.js" defer></script>
+</body>
+</html>

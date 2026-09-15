@@ -19,6 +19,8 @@
     resetIdentityBtn: $("resetIdentityBtn"),
     identityStatus: $("identityStatus"),
     identityId: $("identityId"),
+    connectPin: $("connectPin"),
+    connectBtn: $("connectBtn"),
     createCodeBtn: $("createCodeBtn"),
     pairCode: $("pairCode"),
     joinCode: $("joinCode"),
@@ -185,6 +187,25 @@
     els.pendingList.textContent = "No pending requests";
     els.pairCode.textContent = "------";
     log("Local browser identity reset.");
+  }
+
+
+  async function connectByPin() {
+    if (!state.identity) await register();
+    const pin = els.connectPin.value.trim();
+    if (!/^\d{6}$/.test(pin)) throw new Error("Enter the Android device's 6-digit permanent PIN.");
+
+    setSessionUi("waiting", "Pairing", "Connecting to Android device PIN…");
+    const data = await api("/api/pair/pin", { body: { pin } });
+    await refreshPairs();
+
+    const option = [...els.pairSelect.options].find(o => o.value === data.pair_id);
+    if (!option) throw new Error("Pair was created but could not be selected. Press Refresh and try again.");
+    els.pairSelect.value = data.pair_id;
+
+    toast(`Paired with ${data.peer_display_name || "Android device"}`);
+    log("Permanent PIN pair ready", { pairId: data.pair_id, status: data.status });
+    await controller.start("listen");
   }
 
   async function createPairCode() {
@@ -844,6 +865,7 @@
 
   els.registerBtn.addEventListener("click", () => guarded(register));
   els.resetIdentityBtn.addEventListener("click", () => guarded(resetIdentity));
+  els.connectBtn.addEventListener("click", () => guarded(connectByPin));
   els.createCodeBtn.addEventListener("click", () => guarded(createPairCode));
   els.joinBtn.addEventListener("click", () => guarded(joinPair));
   els.refreshPendingBtn.addEventListener("click", () => guarded(refreshPending));
@@ -869,6 +891,9 @@
     checkCloud();
   });
   els.deviceName.addEventListener("change", () => localStorage.setItem(NAME_KEY, els.deviceName.value));
+  els.connectPin.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") guarded(connectByPin);
+  });
 
   window.addEventListener("beforeunload", () => {
     if (state.session) {
@@ -919,6 +944,9 @@
     controller.setButtons(false);
     await checkCloud();
     await enumerateOutputs();
+    if (!state.identity) {
+      await guarded(register);
+    }
     if (state.identity) {
       await guarded(refreshPairs);
       await guarded(refreshPending);
