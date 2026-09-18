@@ -91,7 +91,7 @@
     els.pairCount.textContent = items.reduce((sum, x) => sum + Number(x.pair_count || 0), 0);
     els.lastRefresh.textContent = `Updated ${new Date().toLocaleTimeString()}`;
     els.emptyState.style.display = items.length ? "none" : "block";
-    els.emptyState.textContent = items.length ? "" : "No managed Android devices yet. Open LoopLink v0.5.0 on a device to register it.";
+    els.emptyState.textContent = items.length ? "" : "No managed Android devices yet. Open Audio Link v0.7.0 on a device to register it.";
     els.deviceList.innerHTML = "";
 
     for (const item of items) {
@@ -128,6 +128,8 @@
               <option value="stop">Stop</option>
             </select>
             <button class="apply-mode primary">Apply</button>
+            <button class="check-config">Refresh Config</button>
+            <button class="check-update">Check Update</button>
           </div>
         </div>
       `;
@@ -144,6 +146,26 @@
           });
           toast(`${item.display_name || "Device"} → ${modeLabel(mode)}`);
           await refresh();
+        } catch (error) {
+          showError(error);
+        }
+      });
+      el.querySelector(".check-config").addEventListener("click", async () => {
+        try {
+          await api(`/api/admin/devices/${encodeURIComponent(item.device_id)}/config-refresh`, {
+            method: "POST",
+          });
+          toast(`${item.display_name || "Device"} → runtime config refresh sent`);
+        } catch (error) {
+          showError(error);
+        }
+      });
+      el.querySelector(".check-update").addEventListener("click", async () => {
+        try {
+          await api(`/api/admin/devices/${encodeURIComponent(item.device_id)}/update`, {
+            method: "POST",
+          });
+          toast(`${item.display_name || "Device"} → update check sent`);
         } catch (error) {
           showError(error);
         }

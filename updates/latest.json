@@ -1,0 +1,7 @@
+{
+  "version_code": 0,
+  "version_name": "0.0.0",
+  "apk_url": "https://dax4477.github.io/looplink/updates/disabled.apk",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "note": "Placeholder only. Publish the signed Audio Link APK with publish-update-to-pages.ps1 before using Admin > Check Update."
+}

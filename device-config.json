@@ -1,0 +1,15 @@
+{
+  "config_version": 1,
+  "ui_url": "https://dax4477.github.io/looplink/device/",
+  "ota_manifest_url": "https://dax4477.github.io/looplink/updates/latest.json",
+  "heartbeat_seconds": 45,
+  "reconnect_max_seconds": 15,
+  "config_refresh_minutes": 15,
+  "allow_transmit": true,
+  "allow_broadcast": true,
+  "allow_listen": true,
+  "allow_talk": true,
+  "transmit_gain": 2.5,
+  "talk_gain": 1.6,
+  "receive_gain": 1.35
+}
