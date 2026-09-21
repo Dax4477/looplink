@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#07120f">
+  <title>LoopLink Web</title>
+  <link rel="stylesheet" href="link.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="hero card">
+      <div>
+        <span class="eyebrow">LOOPLINK WEB ENDPOINT</span>
+        <h1>Pulse from the web</h1>
+        <p id="subtitle">Registering this browser as an endpoint…</p>
+      </div>
+      <div id="statusPill" class="pill pending">Starting</div>
+    </section>
+
+    <section class="card identity">
+      <div>
+        <span class="label">Endpoint</span>
+        <strong id="endpointName">This browser</strong>
+        <code id="endpointId">—</code>
+      </div>
+      <div class="facts">
+        <span>Vibration <b id="vibrateCap">Checking…</b></span>
+        <span>Socket <b id="socketState">Disconnected</b></span>
+        <span>Outgoing routes <b id="routeCount">0</b></span>
+      </div>
+    </section>
+
+    <section class="pulse-card card">
+      <button id="enableVibration" class="secondary">Enable vibration</button>
+      <button id="pulseButton" class="pulse" disabled>
+        <span>PULSE</span>
+        <small>Tap to send</small>
+      </button>
+      <p id="message">Waiting for Admin approval.</p>
+    </section>
+
+    <section class="card notes">
+      <strong>How this works</strong>
+      <p>This browser is a LoopLink endpoint. Admin decides which endpoints it can send Pulse to and which endpoints can send Pulse here.</p>
+      <p>Web vibration depends on browser support and foreground/background rules. Native Android remains the more reliable background endpoint.</p>
+    </section>
+  </main>
+  <script src="link.js" defer></script>
+</body>
+</html>
