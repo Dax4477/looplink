@@ -14,12 +14,14 @@
     endpointId: $("endpointId"),
     appMode: $("appMode"),
     vibrateCap: $("vibrateCap"),
+    notificationState: $("notificationState"),
     socketState: $("socketState"),
     routeCount: $("routeCount"),
     installCard: $("installCard"),
     installTitle: $("installTitle"),
     installText: $("installText"),
     installButton: $("installButton"),
+    enableNotifications: $("enableNotifications"),
     enableVibration: $("enableVibration"),
     pulse: $("pulseButton"),
     message: $("message")
@@ -138,6 +140,7 @@
         els.subtitle.textContent = "This device is an approved LoopLink endpoint.";
         els.pulse.disabled = false;
         connectSocket();
+        syncNotificationState().catch(() => {});
       } else if (state.status === "rejected") {
         setStatus("bad", "Rejected");
         els.subtitle.textContent = "Admin rejected this endpoint.";
@@ -204,7 +207,7 @@
         if (data.type === "pulse") {
           vibrate(data.duration_ms);
           els.message.textContent =
-            `Incoming Pulse • ${new Date().toLocaleTimeString()}`;
+            `Incoming Pulse Ã¢â‚¬Â¢ ${new Date().toLocaleTimeString()}`;
 
           els.pulse.animate(
             [
@@ -254,7 +257,7 @@
       els.installTitle.textContent = "Add LoopLink to Home Screen";
       els.installText.textContent =
         "On iPhone/iPad: tap Share, then Add to Home Screen. It opens as a standalone app.";
-      els.installButton.textContent = "Share → Add to Home Screen";
+      els.installButton.textContent = "Share Ã¢â€ â€™ Add to Home Screen";
       els.installButton.disabled = true;
       return;
     }
@@ -268,7 +271,7 @@
     } else {
       els.installTitle.textContent = "LoopLink PWA";
       els.installText.textContent =
-        "Use your browser menu → Install app / Add to Home Screen.";
+        "Use your browser menu Ã¢â€ â€™ Install app / Add to Home Screen.";
       els.installButton.textContent = "Install from browser menu";
       els.installButton.disabled = true;
     }
@@ -293,6 +296,136 @@
     prompt.prompt();
     try { await prompt.userChoice; } catch {}
     renderInstallUX();
+  });
+
+  function pushSupported() {
+    return "serviceWorker" in navigator &&
+      "PushManager" in window &&
+      "Notification" in window;
+  }
+
+  function base64UrlToUint8Array(value) {
+    const padded = value + "=".repeat((4 - (value.length % 4)) % 4);
+    const base64 = padded.replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(base64);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) {
+      bytes[i] = raw.charCodeAt(i);
+    }
+    return bytes;
+  }
+
+  async function syncNotificationState() {
+    if (!pushSupported()) {
+      els.notificationState.textContent = "Unsupported";
+      els.enableNotifications.textContent = "Notifications unsupported";
+      els.enableNotifications.disabled = true;
+      return;
+    }
+
+    if (isIOS() && !isStandalone()) {
+      els.notificationState.textContent = "Install PWA first";
+      els.enableNotifications.textContent = "Install PWA for notifications";
+      els.enableNotifications.disabled = true;
+      return;
+    }
+
+    if (Notification.permission === "denied") {
+      els.notificationState.textContent = "Blocked";
+      els.enableNotifications.textContent = "Notifications blocked";
+      els.enableNotifications.disabled = true;
+      return;
+    }
+
+    const reg = await navigator.serviceWorker.ready;
+    const subscription = await reg.pushManager.getSubscription();
+
+    if (Notification.permission === "granted" && subscription) {
+      els.notificationState.textContent = "Enabled";
+      els.enableNotifications.textContent = "Notifications enabled";
+      els.enableNotifications.disabled = false;
+
+      if (approved) {
+        try {
+          await request("/api/endpoint/push/subscribe", {
+            method: "POST",
+            body: { subscription: subscription.toJSON() }
+          });
+        } catch (e) {
+          console.warn("Push subscription sync failed", e);
+        }
+      }
+      return;
+    }
+
+    els.notificationState.textContent =
+      Notification.permission === "granted" ? "Not subscribed" : "Not enabled";
+    els.enableNotifications.textContent = "Enable notifications";
+    els.enableNotifications.disabled = !approved;
+  }
+
+  async function enableNotifications() {
+    if (!approved) {
+      els.message.textContent = "Admin must approve this endpoint first.";
+      return;
+    }
+
+    if (!pushSupported()) {
+      els.message.textContent = "Push notifications are not supported in this browser.";
+      return;
+    }
+
+    if (isIOS() && !isStandalone()) {
+      els.message.textContent = "On iPhone/iPad, add LoopLink to the Home Screen first, then open the installed app.";
+      renderInstallUX();
+      return;
+    }
+
+    const permission = await Notification.requestPermission();
+
+    if (permission !== "granted") {
+      await syncNotificationState();
+      els.message.textContent =
+        permission === "denied"
+          ? "Notifications are blocked. Enable them in system/browser settings."
+          : "Notification permission was not granted.";
+      return;
+    }
+
+    const reg = await navigator.serviceWorker.ready;
+    const keyInfo = await request("/api/endpoint/push/public-key");
+    const applicationServerKey =
+      base64UrlToUint8Array(keyInfo.public_key);
+
+    let subscription = await reg.pushManager.getSubscription();
+
+    if (!subscription) {
+      subscription = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey
+      });
+    }
+
+    const result = await request("/api/endpoint/push/subscribe", {
+      method: "POST",
+      body: { subscription: subscription.toJSON() }
+    });
+
+    els.notificationState.textContent = "Enabled";
+    els.enableNotifications.textContent = "Notifications enabled";
+    els.message.textContent =
+      `Notifications enabled Ã¢â‚¬Â¢ ${result.subscriptions || 1} subscription(s) registered`;
+  }
+
+  els.enableNotifications.addEventListener("click", () => {
+    enableNotifications()
+      .catch(e => {
+        console.error(e);
+        els.message.textContent = e.message || String(e);
+      })
+      .finally(() => {
+        syncNotificationState().catch(() => {});
+      });
   });
 
   els.enableVibration.addEventListener("click", () => {
@@ -325,7 +458,7 @@
       });
 
       els.message.textContent = result.targets?.length
-        ? `Pulse routed to ${result.targets.length} endpoint(s) • live deliveries: ${result.delivered}`
+        ? `Pulse routed to ${result.targets.length} endpoint(s) Ã¢â‚¬Â¢ live: ${result.delivered} Ã¢â‚¬Â¢ push: ${result.push_delivered || 0}`
         : "No outgoing Pulse route. Add one in Admin.";
     } catch (e) {
       els.message.textContent = e.message;
@@ -341,10 +474,21 @@
 
   renderInstallUX();
 
+  if (!pushSupported()) {
+    els.notificationState.textContent = "Unsupported";
+  } else if (Notification.permission === "granted") {
+    els.notificationState.textContent = "CheckingÃ¢â‚¬Â¦";
+  } else if (Notification.permission === "denied") {
+    els.notificationState.textContent = "Blocked";
+  } else {
+    els.notificationState.textContent = "Not enabled";
+  }
+
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
       navigator.serviceWorker
         .register("./sw.js", { scope: "./" })
+        .then(() => syncNotificationState().catch(() => {}))
         .catch(err => console.warn("LoopLink PWA service worker:", err));
     });
   }

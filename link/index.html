@@ -35,6 +35,7 @@
       <div class="facts">
         <span>App mode <b id="appMode">Browser</b></span>
         <span>Vibration <b id="vibrateCap">Checking…</b></span>
+        <span>Notifications <b id="notificationState">Checking…</b></span>
         <span>Socket <b id="socketState">Disconnected</b></span>
         <span>Outgoing routes <b id="routeCount">0</b></span>
       </div>
@@ -50,7 +51,10 @@
     </section>
 
     <section class="pulse-card card">
-      <button id="enableVibration" class="secondary" type="button">Enable vibration</button>
+      <div class="action-row">
+        <button id="enableNotifications" class="secondary" type="button">Enable notifications</button>
+        <button id="enableVibration" class="secondary" type="button">Enable vibration</button>
+      </div>
       <button id="pulseButton" class="pulse" type="button" disabled>
         <span>PULSE</span>
         <small>Tap to send</small>
@@ -62,7 +66,7 @@
       <strong>Universal endpoint</strong>
       <p>Admin decides which endpoints this device can send Pulse to and which endpoints can send Pulse here.</p>
       <p>Android PWA: supported browsers can vibrate while active. iPhone/iPad PWA: installs like an app, but custom web vibration is not available.</p>
-      <p>Background reliability is lower than the native Android app. Web Push can be added next for background notifications.</p>
+      <p>Web Push delivers a native notification when a routed Pulse arrives, including when the PWA is backgrounded or closed where the platform allows it. The native Android app remains the strongest always-on endpoint.</p>
     </section>
   </main>
 

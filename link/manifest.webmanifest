@@ -2,7 +2,7 @@
   "id": "./",
   "name": "LoopLink Pulse",
   "short_name": "LoopLink",
-  "description": "Admin-routed LoopLink Pulse endpoint for Android, iPhone, iPad and desktop.",
+  "description": "Admin-routed LoopLink Pulse endpoint with installable PWA and Web Push notifications.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
