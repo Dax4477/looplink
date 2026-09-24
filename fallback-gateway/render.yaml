@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: looplink-fallback
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /fallback-health
+    envVars:
+      - key: UPSTREAM_HTTP
+        value: https://looplink-api.obserax.workers.dev
+      - key: UPSTREAM_WS
+        value: wss://looplink-api.obserax.workers.dev
