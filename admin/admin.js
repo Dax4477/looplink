@@ -21,6 +21,32 @@
 
   let endpoints=[],links=[],devices=[],timer=null,toastTimer,activeFilter="all",modalAction=null;
 
+  const REQUIRED_IDS = [
+    "apiUrl","adminToken","connectBtn","refreshBtn","cloudState",
+    "endpointCount","onlineCount","pendingCount","linkCount","lastRefresh",
+    "endpointList","endpointEmpty","sourceEndpoint","targetEndpoint","direction",
+    "createLinkBtn","linkList","toast","endpointSearch","endpointFilters",
+    "endpointSort","confirmModal","modalEyebrow","modalTitle","modalMessage",
+    "modalIdentity","modalConfirmBtn","deleteConfirmWrap","deleteConfirmInput"
+  ];
+
+  const missingIds = REQUIRED_IDS.filter(id => !document.getElementById(id));
+  if (missingIds.length) {
+    const message = `LoopLink Admin UI files are out of sync. Missing HTML elements: ${missingIds.join(", ")}. Deploy admin.html, admin.css and admin.js from the same release, then hard-refresh.`;
+    console.error(message);
+    const state = document.getElementById("cloudState");
+    if (state) {
+      state.className = "pill bad";
+      state.textContent = "Admin UI files out of sync";
+    }
+    const banner = document.createElement("div");
+    banner.style.cssText = "position:fixed;left:16px;right:16px;top:16px;z-index:99999;padding:14px 16px;border:1px solid #ff7474;background:#2b1114;color:#ffd8dc;border-radius:12px;font:700 14px/1.4 system-ui";
+    banner.textContent = message;
+    document.body.appendChild(banner);
+    return;
+  }
+
+
   const apiBase=()=> (sessionStorage.getItem(API_KEY)||els.apiUrl.value||DEFAULT_API).replace(/\/+$/,"");
   const token=()=>sessionStorage.getItem(TOKEN_KEY)||els.adminToken.value.trim();
   const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
