@@ -1,4 +1,4 @@
-(() => {
+﻿(() => {
   "use strict";
 
   const DEFAULT_API="https://looplink-api.obserax.workers.dev",
@@ -76,7 +76,7 @@
     const approved=endpoints.filter(e=>e.status==="approved");
     for(const el of [els.source,els.target]){
       const old=el.value;
-      el.innerHTML='<option value="">Select endpoint…</option>'+approved.map(e=>`<option value="${esc(e.endpoint_id)}">${esc(`${e.display_name||e.endpoint_id} • ${e.kind}${e.online?" • online":""}`)}</option>`).join("");
+      el.innerHTML='<option value="">Select endpointâ€¦</option>'+approved.map(e=>`<option value="${esc(e.endpoint_id)}">${esc(`${e.display_name||e.endpoint_id} â€¢ ${e.kind}${e.online?" â€¢ online":""}`)}</option>`).join("");
       if(approved.some(e=>e.endpoint_id===old))el.value=old;
     }
   }
@@ -145,12 +145,12 @@
           <div class="route-block">
             <span class="label">ROUTES</span>
             <strong class="route-value">${Number(e.incoming_count||0)} in / ${Number(e.outgoing_count||0)} out</strong>
-            <div class="mode-badges"><span class="badge">Pulse ${caps.pulse?"✓":"—"}</span><span class="badge">Audio ${caps.audio?"✓":"—"}</span></div>
+            <div class="mode-badges"><span class="badge">Pulse ${caps.pulse?"âœ“":"â€”"}</span><span class="badge">Audio ${caps.audio?"âœ“":"â€”"}</span></div>
           </div>
 
           <div class="device-block">
             ${d?`
-              <span class="label">PERMANENT PIN</span><strong class="pin-value">${esc(d.pairing_pin||"—")}</strong>
+              <span class="label">PERMANENT PIN</span><strong class="pin-value">${esc(d.pairing_pin||"â€”")}</strong>
               <div class="mode-badges"><span class="badge">Current: ${esc(modeLabel(d.current_mode))}</span><span class="badge desired">Desired: ${esc(modeLabel(d.desired_mode))}</span></div>
             `:`<span class="label">ENDPOINT</span><div class="mode-badges"><span class="badge">${isAndroid?"No native record matched":"Browser endpoint"}</span></div>`}
           </div>
@@ -159,7 +159,7 @@
             ${e.status==="pending"?'<button class="approve primary">Approve</button><button class="reject">Reject</button>':""}
             <button class="details-btn">Details</button>
             <div class="more-wrap">
-              <button class="more-btn" aria-label="More actions">⋮</button>
+              <button class="more-btn" aria-label="More actions">â‹®</button>
               <div class="more-menu">
                 ${d?'<button class="copy-pin">Copy permanent PIN</button>':""}
                 <button class="copy-id">Copy endpoint ID</button>
@@ -190,7 +190,7 @@
           ${d?`<div class="detail-box"><span>MODEL</span><strong>${esc(d.device_model||"Unknown")}</strong></div>
           <div class="detail-box"><span>ANDROID</span><strong>${esc(d.android_version||"Unknown")}</strong></div>
           <div class="detail-box"><span>APP VERSION</span><strong>${esc(d.app_version||"Unknown")}</strong></div>
-          <div class="detail-box"><span>PERMANENT PIN</span><strong>${esc(d.pairing_pin||"—")}</strong></div>`:""}
+          <div class="detail-box"><span>PERMANENT PIN</span><strong>${esc(d.pairing_pin||"â€”")}</strong></div>`:""}
         </div>`;
 
       const detailsBtn=card.querySelector(".details-btn");
@@ -237,7 +237,7 @@
   }
 
   async function endpointAction(e,action){
-    try{await api(`/api/admin/endpoints/${encodeURIComponent(e.endpoint_id)}/${action}`,{method:"POST"});toast(`${e.display_name||e.endpoint_id} → ${action}`);await refresh()}
+    try{await api(`/api/admin/endpoints/${encodeURIComponent(e.endpoint_id)}/${action}`,{method:"POST"});toast(`${e.display_name||e.endpoint_id} â†’ ${action}`);await refresh()}
     catch(err){showError(err)}
   }
 
@@ -246,14 +246,14 @@
     els.linkList.innerHTML=links.length?"":'<div class="empty">No routes yet.</div>';
     for(const l of links){
       const row=document.createElement("div");row.className="link-row";
-      row.innerHTML=`<div><strong>${esc(l.source_name||l.source_endpoint_id)}</strong> → <strong>${esc(l.target_name||l.target_endpoint_id)}</strong><small>${esc(l.source_kind)} → ${esc(l.target_kind)} • Pulse ${Number(l.pulse_enabled)?"on":"off"}</small></div><button class="danger">Remove</button>`;
+      row.innerHTML=`<div><strong>${esc(l.source_name||l.source_endpoint_id)}</strong> â†’ <strong>${esc(l.target_name||l.target_endpoint_id)}</strong><small>${esc(l.source_kind)} â†’ ${esc(l.target_kind)} â€¢ Pulse ${Number(l.pulse_enabled)?"on":"off"}</small></div><button class="danger">Remove</button>`;
       row.querySelector("button").onclick=async()=>{try{await api(`/api/admin/links/${encodeURIComponent(l.link_id)}`,{method:"DELETE"});toast("Link removed");await refresh()}catch(err){showError(err)}};
       els.linkList.append(row);
     }
   }
 
   async function command(d,what,body,msg){
-    try{await api(`/api/admin/devices/${encodeURIComponent(d.device_id)}/${what}`,{method:"POST",body});toast(`${d.display_name||d.device_model||"Device"} → ${msg}`);await refresh()}
+    try{await api(`/api/admin/devices/${encodeURIComponent(d.device_id)}/${what}`,{method:"POST",body});toast(`${d.display_name||d.device_model||"Device"} â†’ ${msg}`);await refresh()}
     catch(err){showError(err)}
   }
 
@@ -277,10 +277,48 @@
   function closeModal(){modalAction=null;els.confirmModal.classList.remove("show");els.confirmModal.setAttribute("aria-hidden","true")}
 
   async function refresh(){
-    const [e,l,d]=await Promise.all([api("/api/admin/endpoints"),api("/api/admin/links"),api("/api/admin/devices")]);
-    endpoints=e.items||[];links=l.items||[];devices=d.items||[];
-    els.cloudState.className="pill ok";els.cloudState.textContent="Admin API connected";els.lastRefresh.textContent=`Updated ${new Date().toLocaleTimeString()}`;
-    renderEndpoints();renderLinks();
+    const [e,l,d]=await Promise.all([
+      api("/api/admin/endpoints"),
+      api("/api/admin/links"),
+      api("/api/admin/devices")
+    ]);
+
+    devices=d.items||[];
+    links=l.items||[];
+
+    // Android heartbeat presence lives in the native device registry.
+    // Endpoint records can have an older last_seen/online projection.
+    // Reconcile Android endpoint presence using the matching device_id.
+    const deviceById=new Map();
+
+    for(const device of devices){
+      if(device.device_id) deviceById.set(device.device_id,device);
+      if(device.endpoint_id) deviceById.set(device.endpoint_id,device);
+    }
+
+    endpoints=(e.items||[]).map(endpoint=>{
+      if(endpoint.kind!=="android") return endpoint;
+
+      const device=deviceById.get(endpoint.endpoint_id);
+
+      if(!device) return endpoint;
+
+      return {
+        ...endpoint,
+        online:Boolean(device.online),
+        last_seen:Math.max(
+          Number(endpoint.last_seen||0),
+          Number(device.last_seen||0)
+        )
+      };
+    });
+
+    els.cloudState.className="pill ok";
+    els.cloudState.textContent="Admin API connected";
+    els.lastRefresh.textContent=`Updated ${new Date().toLocaleTimeString()}`;
+
+    renderEndpoints();
+    renderLinks();
   }
 
   async function connect(){
